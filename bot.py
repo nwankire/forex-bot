@@ -9,8 +9,11 @@ WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 CHAT_ID = int(os.environ.get('CHAT_ID'))
 
 app = Flask(__name__)
-#.updater(None) disables polling mode for webhooks
 application = ApplicationBuilder().token(TOKEN).updater(None).build()
+
+# Initialize the bot once when the app starts
+loop = asyncio.get_event_loop()
+loop.run_until_complete(application.initialize())
 
 # Bot state
 bot_running = False
@@ -20,11 +23,10 @@ signal_task = None
 async def check_and_send_signal():
     global bot_running
     while bot_running:
-        # REPLACE THIS WITH YOUR REAL RSI/FOREX STRATEGY LATER
         price = 1.0850
         signal = f"🔥 {active_pair} SIGNAL\nBUY @ {price}\nTP: {price + 0.0020}\nSL: {price - 0.0010}"
         await application.bot.send_message(chat_id=CHAT_ID, text=signal)
-        await asyncio.sleep(300) # 5 min between signals
+        await asyncio.sleep(300)
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_running, signal_task
@@ -72,14 +74,13 @@ application.add_handler(CallbackQueryHandler(button_handler))
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    asyncio.run(application.initialize())
-    asyncio.run(application.process_update(Update.de_json(request.get_json(force=True), application.bot)))
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    loop.run_until_complete(application.process_update(update))
     return 'ok'
 
 @app.route('/setwebhook')
 def set_webhook():
-    asyncio.run(application.initialize())
-    asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+    loop.run_until_complete(application.bot.set_webhook(url=WEBHOOK_URL))
     return 'Webhook set'
 
 @app.route('/')
