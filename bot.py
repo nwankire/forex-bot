@@ -9,7 +9,8 @@ WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 CHAT_ID = int(os.environ.get('CHAT_ID'))
 
 app = Flask(__name__)
-application = ApplicationBuilder().token(TOKEN).build()
+# KEY FIX:.updater(None) disables polling mode for webhooks
+application = ApplicationBuilder().token(TOKEN).updater(None).build()
 
 # Bot state
 bot_running = False
@@ -77,6 +78,7 @@ async def webhook():
 
 @app.route('/setwebhook')
 async def set_webhook():
+    await application.initialize()
     await application.bot.set_webhook(url=WEBHOOK_URL)
     return 'Webhook set'
 
