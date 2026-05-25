@@ -11,6 +11,7 @@ CHAT_ID = int(os.environ.get('CHAT_ID'))
 app = Flask(__name__)
 application = ApplicationBuilder().token(TOKEN).build()
 
+# Bot state
 bot_running = False
 active_pair = "EURUSD"
 signal_task = None
@@ -18,9 +19,11 @@ signal_task = None
 async def check_and_send_signal():
     global bot_running
     while bot_running:
-        signal = f"🔥 {active_pair} SIGNAL\nBUY @ 1.0850\nTP: 1.0870\nSL: 1.0840"
+        # REPLACE THIS WITH YOUR REAL RSI/FOREX STRATEGY LATER
+        price = 1.0850
+        signal = f"🔥 {active_pair} SIGNAL\nBUY @ {price}\nTP: {price + 0.0020}\nSL: {price - 0.0010}"
         await application.bot.send_message(chat_id=CHAT_ID, text=signal)
-        await asyncio.sleep(300)
+        await asyncio.sleep(300) # 5 min between signals
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_running, signal_task
