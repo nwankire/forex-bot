@@ -1,6 +1,5 @@
 import os
 import asyncio
-import threading
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
@@ -12,12 +11,13 @@ CHAT_ID = int(os.environ.get('CHAT_ID'))
 app = Flask(__name__)
 application = ApplicationBuilder().token(TOKEN).updater(None).build()
 
-# Create ONE event loop for the whole app
+# Create and start a single event loop in background
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # Initialize PTB once at startup
 loop.run_until_complete(application.initialize())
+loop.run_until_complete(application.start())
 
 # Bot state
 bot_running = False
@@ -27,11 +27,10 @@ signal_task = None
 async def check_and_send_signal():
     global bot_running
     while bot_running:
-        # REPLACE THIS WITH YOUR REAL RSI/FOREX STRATEGY LATER
         price = 1.0850
         signal = f"🔥 {active_pair} SIGNAL\nBUY @ {price}\nTP: {price + 0.0020}\nSL: {price - 0.0010}"
         await application.bot.send_message(chat_id=CHAT_ID, text=signal)
-        await asyncio.sleep(300) # 5 min between signals
+        await asyncio.sleep(300)
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_running, signal_task
@@ -80,7 +79,7 @@ application.add_handler(CallbackQueryHandler(button_handler))
 @app.route('/webhook', methods=['POST'])
 def webhook():
     update = Update.de_json(request.get_json(force=True), application.bot)
-    loop.run_until_complete(application.process_update(update))
+    asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
     return 'ok'
 
 @app.route('/setwebhook')
@@ -91,12 +90,6 @@ def set_webhook():
 @app.route('/')
 def index():
     return 'Bot is alive'
-
-def run_loop():
-    loop.run_forever()
-
-# Start the loop in background thread so gunicorn doesn't block
-threading.Thread(target=run_loop, daemon=True).start()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
