@@ -9,7 +9,7 @@ WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 CHAT_ID = int(os.environ.get('CHAT_ID'))
 
 app = Flask(__name__)
-# KEY FIX:.updater(None) disables polling mode for webhooks
+#.updater(None) disables polling mode for webhooks
 application = ApplicationBuilder().token(TOKEN).updater(None).build()
 
 # Bot state
@@ -71,15 +71,15 @@ application.add_handler(CommandHandler("status", status))
 application.add_handler(CallbackQueryHandler(button_handler))
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
-    await application.initialize()
-    await application.process_update(Update.de_json(request.get_json(force=True), application.bot))
+def webhook():
+    asyncio.run(application.initialize())
+    asyncio.run(application.process_update(Update.de_json(request.get_json(force=True), application.bot)))
     return 'ok'
 
 @app.route('/setwebhook')
-async def set_webhook():
-    await application.initialize()
-    await application.bot.set_webhook(url=WEBHOOK_URL)
+def set_webhook():
+    asyncio.run(application.initialize())
+    asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
     return 'Webhook set'
 
 @app.route('/')
