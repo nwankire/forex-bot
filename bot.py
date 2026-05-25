@@ -1,70 +1,64 @@
 import os
-import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
+import telebot
+from telebot import types
+import threading
+import time
 
 TOKEN = os.environ.get('BOT_TOKEN')
 CHAT_ID = int(os.environ.get('CHAT_ID'))
+bot = telebot.TeleBot(TOKEN)
 
 bot_running = False
 active_pair = "EURUSD"
-signal_task = None
 
-async def check_and_send_signal():
+def send_signals():
     global bot_running
     while bot_running:
         price = 1.0850
         signal = f"🔥 {active_pair} SIGNAL\nBUY @ {price}\nTP: {price + 0.0020}\nSL: {price - 0.0010}"
-        await app.bot.send_message(chat_id=CHAT_ID, text=signal)
-        await asyncio.sleep(300)
+        bot.send_message(CHAT_ID, signal)
+        time.sleep(300)
 
-async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_running, signal_task
+@bot.message_handler(commands=['startbot'])
+def start_bot(message):
+    global bot_running
     if bot_running:
-        await update.message.reply_text('Bot already running')
+        bot.reply_to(message, 'Bot already running')
         return
     bot_running = True
-    signal_task = asyncio.create_task(check_and_send_signal())
-    await update.message.reply_text(f'✅ Auto signals started\nPair: {active_pair}')
+    threading.Thread(target=send_signals, daemon=True).start()
+    bot.reply_to(message, f'✅ Auto signals started\nPair: {active_pair}')
 
-async def stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_running, signal_task
+@bot.message_handler(commands=['stopbot'])
+def stop_bot(message):
+    global bot_running
     bot_running = False
-    if signal_task:
-        signal_task.cancel()
-    await update.message.reply_text('🛑 Auto signals stopped')
+    bot.reply_to(message, '🛑 Auto signals stopped')
 
-async def set_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("EURUSD", callback_data="pair_EURUSD"),
-         InlineKeyboardButton("GBPUSD", callback_data="pair_GBPUSD")],
-        [InlineKeyboardButton("XAUUSD", callback_data="pair_XAUUSD"),
-         InlineKeyboardButton("USDJPY", callback_data="pair_USDJPY")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text('Pick a pair:', reply_markup=reply_markup)
+@bot.message_handler(commands=['setpair'])
+def set_pair(message):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("EURUSD", callback_data="pair_EURUSD"),
+        types.InlineKeyboardButton("GBPUSD", callback_data="pair_GBPUSD")
+    )
+    markup.add(
+        types.InlineKeyboardButton("XAUUSD", callback_data="pair_XAUUSD"),
+        types.InlineKeyboardButton("USDJPY", callback_data="pair_USDJPY")
+    )
+    bot.send_message(message.chat.id, 'Pick a pair:', reply_markup=markup)
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@bot.callback_query_handler(func=lambda call: call.data.startswith('pair_'))
+def handle_pair(call):
     global active_pair
-    query = update.callback_query
-    await query.answer()
-    if query.data.startswith("pair_"):
-        active_pair = query.data.split("_")[1]
-        await query.edit_message_text(f'✅ Active pair set to: {active_pair}')
+    active_pair = call.data.split("_")[1]
+    bot.edit_message_text(f'✅ Active pair set to: {active_pair}', 
+                         call.message.chat.id, call.message.message_id)
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@bot.message_handler(commands=['status'])
+def status(message):
     status = "Running ✅" if bot_running else "Stopped 🛑"
-    await update.message.reply_text(f'Status: {status}\nPair: {active_pair}')
+    bot.reply_to(message, f'Status: {status}\nPair: {active_pair}')
 
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("startbot", start_bot))
-    app.add_handler(CommandHandler("stopbot", stop_bot))
-    app.add_handler(CommandHandler("setpair", set_pair))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CallbackQueryHandler(button_handler))
-
-    # THIS IS ALL YOU NEED - NO WEBHOOK, NO FLASK, NO GUNICORN
-    print("Bot starting in polling mode...")
-    app.run_polling()
+print("Bot starting...")
+bot.infinity_polling()
