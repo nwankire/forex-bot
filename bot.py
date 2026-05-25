@@ -1,62 +1,65 @@
 import os
 import logging
 import requests
-import random
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
-    level=logging.INFO
-)
-
+logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ.get('TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 
-# Binary options pairs - Pocket Option favorites
-PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURJPY", "GBPJPY"]
-TIMEFRAMES = ["M1", "M5"] # Pocket Option timeframes
+# Bot settings - you can change these live
+USER_SETTINGS = {
+    "timeframe": "M1", # Default M1. Use /tf M5 to change
+    "pairs": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"],
+    "active": True
+}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Hey! 👋 Binary Signal Bot Active\n\n"
-        "⚡ Auto signals every 4 minutes\n"
-        "Commands:\n"
-        "/price EURUSD - Get live price\n"
-        "/signal - Force signal now\n"
-        "/id - Get your chat ID\n"
-        "/stop - Pause auto signals\n"
-        "/start_signals - Resume auto signals"
+        f"⚡ Binary Bot Online\n\n"
+        f"Current TF: {USER_SETTINGS['timeframe']}\n"
+        f"Auto signal: {'ON' if USER_SETTINGS['active'] else 'OFF'}\n\n"
+        f"Commands:\n"
+        f"/tf M1 - Switch to 1 min\n"
+        f"/tf M5 - Switch to 5 min\n"
+        f"/signal - Force signal now\n"
+        f"/stop - Pause bot\n"
+        f"/start_bot - Resume bot\n"
+        f"/pairs - See active pairs"
     )
 
-async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Your Chat ID: `{update.effective_chat.id}`", parse_mode='Markdown')
-
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def change_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: /price EURUSD")
+        await update.message.reply_text(f"Current timeframe: {USER_SETTINGS['timeframe']}\nUsage: /tf M1 or /tf M5")
         return
-    symbol = context.args[0].upper()
-    try:
-        response = requests.get(f"https://api.twelvedata.com/price?symbol={symbol}&apikey=demo", timeout=5)
-        data = response.json()
-        if "price" in data:
-            await update.message.reply_text(f"💰 {symbol}: {data['price']}")
-        else:
-            await update.message.reply_text(f"❌ Couldn't find {symbol}")
-    except:
-        await update.message.reply_text("⚠️ Error fetching price")
+    
+    tf = context.args[0].upper()
+    if tf in ["M1", "M5", "M15"]:
+        USER_SETTINGS["timeframe"] = tf
+        # Update job interval based on timeframe
+        interval = 60 if tf == "M1" else 240 if tf == "M5" else 900
+        current_jobs = context.job_queue.get_jobs_by_name("binary_signal")
+        for job in current_jobs:
+            job.schedule_removal()
+        context.job_queue.run_repeating(send_binary_signal, interval=interval, first=5, name="binary_signal")
+        await update.message.reply_text(f"✅ Timeframe changed to {tf}\nNew signal interval: {interval//60} mins")
+    else:
+        await update.message.reply_text("❌ Use M1, M5, or M15")
 
 async def send_binary_signal(context: ContextTypes.DEFAULT_TYPE):
-    """Runs every 4 minutes automatically"""
-    if not CHAT_ID:
+    if not CHAT_ID or not USER_SETTINGS["active"]:
         return
-        
-    pair = random.choice(PAIRS)
-    direction = random.choice(["CALL", "PUT"]) # CALL = Buy, PUT = Sell for binary
-    timeframe = random.choice(TIMEFRAMES)
     
-    # Optional: Get current price so entry is real
+    tf = USER_SETTINGS["timeframe"]
+    pair = random.choice(USER_SETTINGS["pairs"])
+    
+    # THIS IS WHERE YOU ADD REAL STRATEGY LATER
+    # Right now it's still random. Replace this section with RSI/EMA logic
+    direction = random.choice(["CALL", "PUT"])
+    reason = "Test signal - add RSI/EMA logic here"
+    
+    # Get live price for entry
     try:
         res = requests.get(f"https://api.twelvedata.com/price?symbol={pair}&apikey=demo", timeout=3)
         price = res.json().get("price", "N/A")
@@ -64,59 +67,51 @@ async def send_binary_signal(context: ContextTypes.DEFAULT_TYPE):
         price = "N/A"
     
     text = f"""
-⚡ **BINARY SIGNAL** ⚡
+⚡ **POCKET OPTION SIGNAL** ⚡
 
 **PAIR:** {pair}
 **ACTION:** {direction} {'🟢' if direction == 'CALL' else '🔴'}
-**TIMEFRAME:** {timeframe}
+**TIMEFRAME:** {tf}
+**EXPIRY:** {tf}
 **ENTRY:** {price}
-**EXPIRY:** {timeframe}
 
-*Trade responsibly. 1-3% per trade.*
+**REASON:** {reason}
+
+_Risk 1% max. Demo test first._
 """
     await context.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='Markdown')
 
 async def force_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_binary_signal(context)
 
-async def stop_signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    current_jobs = context.job_queue.get_jobs_by_name("binary_signal")
-    for job in current_jobs:
-        job.schedule_removal()
-    await update.message.reply_text("🛑 Auto signals paused. Use /start_signals to resume")
+async def stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    USER_SETTINGS["active"] = False
+    await update.message.reply_text("🛑 Bot paused. Use /start_bot to resume")
 
-async def start_signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.job_queue.run_repeating(send_binary_signal, interval=240, first=5, name="binary_signal") # 240 sec = 4 mins
-    await update.message.reply_text("✅ Auto signals started. Every 4 minutes.")
+async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    USER_SETTINGS["active"] = True
+    await update.message.reply_text("✅ Bot resumed")
 
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"You said: {update.message.text}")
+async def show_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Active pairs: {', '.join(USER_SETTINGS['pairs'])}")
 
 def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("id", get_id))
-    app.add_handler(CommandHandler("price", price))
+    app.add_handler(CommandHandler("tf", change_tf))
     app.add_handler(CommandHandler("signal", force_signal))
-    app.add_handler(CommandHandler("stop", stop_signals))
-    app.add_handler(CommandHandler("start_signals", start_signals))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    app.add_handler(CommandHandler("stop", stop_bot))
+    app.add_handler(CommandHandler("start_bot", start_bot))
+    app.add_handler(CommandHandler("pairs", show_pairs))
     
-    # Start auto signals immediately on boot
     if CHAT_ID:
-        app.job_queue.run_repeating(send_binary_signal, interval=240, first=10, name="binary_signal") # 4 mins
+        # Start with M1 = 60 sec intervals
+        app.job_queue.run_repeating(send_binary_signal, interval=60, first=10, name="binary_signal")
     
     PORT = int(os.environ.get('PORT', 8443))
     WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL')
-    
-    print("Starting webhook...")
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
-    )
+    app.run_webhook(listen="0.0.0.0", port=PORT, url_path=TOKEN, webhook_url=f"{WEBHOOK_URL}/{TOKEN}")
 
 if __name__ == '__main__':
     main()
