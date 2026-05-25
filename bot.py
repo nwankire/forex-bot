@@ -58,8 +58,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f'Status: {status}\nPair: {active_pair}')
 
 if __name__ == '__main__':
-    # THIS LINE IS CRITICAL - MUST HAVE.updater(None)
-    application = ApplicationBuilder().token(TOKEN).updater(None).build()
+    # NO.updater(None) HERE - PTB 20.8 needs the default updater for webhooks
+    application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("startbot", start_bot))
     application.add_handler(CommandHandler("stopbot", stop_bot))
