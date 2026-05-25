@@ -4,7 +4,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 
 TOKEN = os.environ.get('BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 CHAT_ID = int(os.environ.get('CHAT_ID'))
 
 bot_running = False
@@ -16,7 +15,7 @@ async def check_and_send_signal():
     while bot_running:
         price = 1.0850
         signal = f"🔥 {active_pair} SIGNAL\nBUY @ {price}\nTP: {price + 0.0020}\nSL: {price - 0.0010}"
-        await application.bot.send_message(chat_id=CHAT_ID, text=signal)
+        await app.bot.send_message(chat_id=CHAT_ID, text=signal)
         await asyncio.sleep(300)
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,17 +57,14 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f'Status: {status}\nPair: {active_pair}')
 
 if __name__ == '__main__':
-    # NO.updater(None) HERE - PTB 20.8 needs the default updater for webhooks
-    application = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    application.add_handler(CommandHandler("startbot", start_bot))
-    application.add_handler(CommandHandler("stopbot", stop_bot))
-    application.add_handler(CommandHandler("setpair", set_pair))
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CommandHandler("startbot", start_bot))
+    app.add_handler(CommandHandler("stopbot", stop_bot))
+    app.add_handler(CommandHandler("setpair", set_pair))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CallbackQueryHandler(button_handler))
 
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get('PORT', 10000)),
-        webhook_url=WEBHOOK_URL
-    )
+    # THIS IS ALL YOU NEED - NO WEBHOOK, NO FLASK, NO GUNICORN
+    print("Bot starting in polling mode...")
+    app.run_polling()
