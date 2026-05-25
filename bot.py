@@ -3,9 +3,10 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 
 TOKEN = os.environ.get('BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL') 
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL') # Must be https://forex-bot-cxx3.onrender.com/webhook
 CHAT_ID = int(os.environ.get('CHAT_ID'))
 
+# Bot state
 bot_running = False
 active_pair = "EURUSD"
 signal_task = None
@@ -57,8 +58,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f'Status: {status}\nPair: {active_pair}')
 
 if __name__ == '__main__':
-    import asyncio
-    application = ApplicationBuilder().token(TOKEN).build()
+    # KEY FIX:.updater(None) disables polling mode for webhooks
+    application = ApplicationBuilder().token(TOKEN).updater(None).build()
     
     application.add_handler(CommandHandler("startbot", start_bot))
     application.add_handler(CommandHandler("stopbot", stop_bot))
