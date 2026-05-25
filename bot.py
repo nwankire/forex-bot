@@ -1,25 +1,11 @@
 import os
-import asyncio
-from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 
 TOKEN = os.environ.get('BOT_TOKEN')
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL') 
 CHAT_ID = int(os.environ.get('CHAT_ID'))
 
-app = Flask(__name__)
-application = ApplicationBuilder().token(TOKEN).updater(None).build()
-
-# Create and start a single event loop in background
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-
-# Initialize PTB once at startup
-loop.run_until_complete(application.initialize())
-loop.run_until_complete(application.start())
-
-# Bot state
 bot_running = False
 active_pair = "EURUSD"
 signal_task = None
@@ -70,26 +56,18 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "Running ✅" if bot_running else "Stopped 🛑"
     await update.message.reply_text(f'Status: {status}\nPair: {active_pair}')
 
-application.add_handler(CommandHandler("startbot", start_bot))
-application.add_handler(CommandHandler("stopbot", stop_bot))
-application.add_handler(CommandHandler("setpair", set_pair))
-application.add_handler(CommandHandler("status", status))
-application.add_handler(CallbackQueryHandler(button_handler))
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    asyncio.run_coroutine_threadsafe(application.process_update(update), loop)
-    return 'ok'
-
-@app.route('/setwebhook')
-def set_webhook():
-    loop.run_until_complete(application.bot.set_webhook(url=WEBHOOK_URL))
-    return 'Webhook set'
-
-@app.route('/')
-def index():
-    return 'Bot is alive'
-
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+    import asyncio
+    application = ApplicationBuilder().token(TOKEN).build()
+    
+    application.add_handler(CommandHandler("startbot", start_bot))
+    application.add_handler(CommandHandler("stopbot", stop_bot))
+    application.add_handler(CommandHandler("setpair", set_pair))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CallbackQueryHandler(button_handler))
+
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get('PORT', 10000)),
+        webhook_url=WEBHOOK_URL
+    )
