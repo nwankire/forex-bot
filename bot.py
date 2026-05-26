@@ -31,12 +31,18 @@ TIMEZONE = pytz.timezone("Africa/Lagos")
 application = Application.builder().token(BOT_TOKEN).build()
 application.chat_ids = set()
 
-# === TRADING LOGIC - FIXED PANDAS ERROR ===
+# === TRADING LOGIC - FINAL PANDAS FIX ===
 def get_signal(pair):
     try:
-        data = yf.download(tickers=pair, period="2d", interval=TIMEFRAME, progress=False)
-        if len(data) < EMA_SLOW + 5:
+        # group_by='column' prevents MultiIndex columns from yfinance
+        data = yf.download(tickers=pair, period="2d", interval=TIMEFRAME, progress=False, group_by='column')
+
+        if data.empty or len(data) < EMA_SLOW + 5:
             return None
+
+        # Flatten MultiIndex if it still exists
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.droplevel(1)
 
         delta = data['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
@@ -46,15 +52,22 @@ def get_signal(pair):
         data['EMA_FAST'] = data['Close'].ewm(span=EMA_FAST, adjust=False).mean()
         data['EMA_SLOW'] = data['Close'].ewm(span=EMA_SLOW, adjust=False).mean()
 
+        data = data.dropna()
+        if len(data) < 3:
+            return None
+
         last = data.iloc[-2]
         prev = data.iloc[-3]
 
-        # FIX: Convert to float to avoid "Series is ambiguous" error
-        rsi = float(last['RSI'])
-        ema_fast_last = float(last['EMA_FAST'])
-        ema_slow_last = float(last['EMA_SLOW'])
-        ema_fast_prev = float(prev['EMA_FAST'])
-        ema_slow_prev = float(prev['EMA_SLOW'])
+        #.item() extracts scalar from 1-element Series safely
+        rsi = last['RSI'].item()
+        ema_fast_last = last['EMA_FAST'].item()
+        ema_slow_last = last['EMA_SLOW'].item()
+        ema_fast_prev = prev['EMA_FAST'].item()
+        ema_slow_prev = prev['EMA_SLOW'].item()
+
+        if pd.isna(rsi) or pd.isna(ema_fast_last):
+            return None
 
         # CALL signal: RSI oversold + EMA cross up
         if rsi < 30 and ema_fast_prev < ema_slow_prev and ema_fast_last > ema_slow_last:
