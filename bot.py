@@ -31,12 +31,13 @@ TIMEZONE = pytz.timezone("Africa/Lagos")
 application = Application.builder().token(BOT_TOKEN).build()
 application.chat_ids = set()
 
-# === TRADING LOGIC ===
+# === TRADING LOGIC - FIXED ===
 def get_signal(pair):
     try:
         data = yf.download(tickers=pair, period="2d", interval=TIMEFRAME, progress=False)
         if len(data) < EMA_SLOW + 5:
             return None
+
         delta = data['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
@@ -44,12 +45,20 @@ def get_signal(pair):
         data['RSI'] = 100 - (100 / (1 + rs))
         data['EMA_FAST'] = data['Close'].ewm(span=EMA_FAST, adjust=False).mean()
         data['EMA_SLOW'] = data['Close'].ewm(span=EMA_SLOW, adjust=False).mean()
+
         last = data.iloc[-2]
         prev = data.iloc[-3]
-        rsi = last['RSI']
-        if rsi < 30 and prev['EMA_FAST'] < prev['EMA_SLOW'] and last['EMA_FAST'] > last['EMA_SLOW']:
+
+        # FIX: Force to float to avoid "ambiguous Series" error
+        rsi = float(last['RSI'])
+        ema_fast_last = float(last['EMA_FAST'])
+        ema_slow_last = float(last['EMA_SLOW'])
+        ema_fast_prev = float(prev['EMA_FAST'])
+        ema_slow_prev = float(prev['EMA_SLOW'])
+
+        if rsi < 30 and ema_fast_prev < ema_slow_prev and ema_fast_last > ema_slow_last:
             return {"pair": pair.replace("=X", ""), "direction": "CALL ✅", "rsi": round(rsi, 1)}
-        if rsi > 70 and prev['EMA_FAST'] > prev['EMA_SLOW'] and last['EMA_FAST'] < last['EMA_SLOW']:
+        if rsi > 70 and ema_fast_prev > ema_slow_prev and ema_fast_last < ema_slow_last:
             return {"pair": pair.replace("=X", ""), "direction": "PUT 🔻", "rsi": round(rsi, 1)}
         return None
     except Exception as e:
@@ -131,7 +140,7 @@ async def setup():
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
     scheduler.add_job(scan_and_send, "interval", minutes=4)
     scheduler.start()
-    print("Bot started")
+    print("Bot started - scheduler running")
 
 def main():
     app = web.Application()
