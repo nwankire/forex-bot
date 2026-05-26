@@ -11,7 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === CONFIG ===
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL") # https://forex-bot-1-1df7.onrender.com
 PORT = int(os.environ.get("PORT", 10000))
 
 # Trading config
@@ -33,7 +33,6 @@ def get_signal(pair):
         data = yf.download(tickers=pair, period="2d", interval=TIMEFRAME, progress=False)
         if len(data) < EMA_SLOW + 5:
             return None
-
         delta = data['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
@@ -41,19 +40,12 @@ def get_signal(pair):
         data['RSI'] = 100 - (100 / (1 + rs))
         data['EMA_FAST'] = data['Close'].ewm(span=EMA_FAST, adjust=False).mean()
         data['EMA_SLOW'] = data['Close'].ewm(span=EMA_SLOW, adjust=False).mean()
-
         last = data.iloc[-2]
         prev = data.iloc[-3]
-
         rsi = last['RSI']
-        ema_fast = last['EMA_FAST']
-        ema_slow = last['EMA_SLOW']
-        prev_ema_fast = prev['EMA_FAST']
-        prev_ema_slow = prev['EMA_SLOW']
-
-        if rsi < 30 and prev_ema_fast < prev_ema_slow and ema_fast > ema_slow:
+        if rsi < 30 and prev['EMA_FAST'] < prev['EMA_SLOW'] and last['EMA_FAST'] > last['EMA_SLOW']:
             return {"pair": pair.replace("=X", ""), "direction": "CALL ✅", "rsi": round(rsi, 1)}
-        if rsi > 70 and prev_ema_fast > prev_ema_slow and ema_fast < ema_slow:
+        if rsi > 70 and prev['EMA_FAST'] > prev['EMA_SLOW'] and last['EMA_FAST'] < last['EMA_SLOW']:
             return {"pair": pair.replace("=X", ""), "direction": "PUT 🔻", "rsi": round(rsi, 1)}
         return None
     except Exception as e:
@@ -64,8 +56,9 @@ def check_session():
     now = datetime.now(TIMEZONE)
     return SESSION_START <= now.hour < SESSION_END
 
-# === COMMANDS ===
+# === TELEGRAM COMMANDS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.application.chat_ids.add(update.effective_chat.id)
     msg = f"""
 ⚡ PO BINARY BOT ⚡
 Scanning {len(PAIRS)} pairs
@@ -83,7 +76,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Status
 Time: {now} GMT+1
 Session: {session_status}
-TF: {TIMEFRAME.upper()} | {"5 Minutes" if TIMEFRAME == "5m" else "15 Minutes"}
+TF: {TIMEFRAME.upper()}
 Bot: {"ON" if BOT_ACTIVE else "OFF"}
 Pairs: {len(PAIRS)}
 """
@@ -135,10 +128,7 @@ Confidence: 75%
                     print(f"Send error: {e}")
         await asyncio.sleep(1)
 
-# === HEALTH CHECK + SETUP ===
-async def health_check(request):
-    return web.Response(text="Bot is running", status=200)
-
+# === SETUP ===
 async def post_init(app: Application):
     app.chat_ids = set()
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
@@ -146,14 +136,11 @@ async def post_init(app: Application):
     scheduler.start()
     print("Scheduler started")
 
-    # This is the correct way - inside post_init
-    app.web_app.router.add_get("/", health_check)
+# === THIS IS THE FIX ===
+async def health(_):
+    return web.Response(text="Bot is running")
 
-async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.application.chat_ids.add(update.effective_chat.id)
-
-def main():
-    # DO NOT add.web_app() here - that was the bug
+async def run_bot():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -161,15 +148,17 @@ def main():
     app.add_handler(CommandHandler("tf", tf))
     app.add_handler(CommandHandler("on", on))
     app.add_handler(CommandHandler("off", off))
-    app.add_handler(CommandHandler("start", track_chats), group=1)
 
-    print(f"Starting webhook on port {PORT}")
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=BOT_TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
-    )
+    # Create custom aiohttp app for health check
+    webapp = web.Application()
+    webapp.router.add_get("/", health)
+
+    # Attach PTB webhook to the same app
+    await app.bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
+    webapp.router.add_post(f"/{BOT_TOKEN}", app.webhook_handler())
+
+    return webapp
 
 if __name__ == "__main__":
-    main()
+    webapp = asyncio.run(run_bot())
+    web.run_app(webapp, host="0.0.0.0", port=PORT)
