@@ -4,14 +4,13 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime
 import pytz
-from aiohttp import web
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === CONFIG ===
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL") # https://forex-bot-1-1df7.onrender.com
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 10000))
 
 # Trading config
@@ -56,14 +55,14 @@ def check_session():
     now = datetime.now(TIMEZONE)
     return SESSION_START <= now.hour < SESSION_END
 
-# === TELEGRAM COMMANDS ===
+# === COMMANDS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.application.chat_ids.add(update.effective_chat.id)
     msg = f"""
 ⚡ PO BINARY BOT ⚡
 Scanning {len(PAIRS)} pairs
 Strategy: RSI{RSI_PERIOD} + EMA{EMA_FAST}/{EMA_SLOW}
-Current TF: {TIMEFRAME.upper()} | {"5 Minutes" if TIMEFRAME == "5m" else "15 Minutes"}
+Current TF: {TIMEFRAME.upper()}
 Session: {SESSION_START}am-{SESSION_END}pm GMT+1
 Status: {"ON" if BOT_ACTIVE else "OFF"}
 """
@@ -72,15 +71,7 @@ Status: {"ON" if BOT_ACTIVE else "OFF"}
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(TIMEZONE).strftime("%H:%M")
     session_status = "OPEN 🟢" if check_session() else "CLOSED ❌"
-    msg = f"""
-Status
-Time: {now} GMT+1
-Session: {session_status}
-TF: {TIMEFRAME.upper()}
-Bot: {"ON" if BOT_ACTIVE else "OFF"}
-Pairs: {len(PAIRS)}
-"""
-    await update.message.reply_text(msg)
+    await update.message.reply_text(f"Time: {now} GMT+1\nSession: {session_status}\nTF: {TIMEFRAME.upper()}\nBot: {'ON' if BOT_ACTIVE else 'OFF'}")
 
 async def tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TIMEFRAME
@@ -90,12 +81,10 @@ async def tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     arg = context.args[0].upper()
     if arg == "M5":
         TIMEFRAME = "5m"
-        await update.message.reply_text("Timeframe changed to M5 | 5 Minutes")
+        await update.message.reply_text("Timeframe: M5 | 5 Minutes")
     elif arg == "M15":
         TIMEFRAME = "15m"
-        await update.message.reply_text("Timeframe changed to M15 | 15 Minutes")
-    else:
-        await update.message.reply_text("Invalid. Use /tf M5 or /tf M15")
+        await update.message.reply_text("Timeframe: M15 | 15 Minutes")
 
 async def on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_ACTIVE
@@ -114,33 +103,28 @@ async def scan_and_send(app: Application):
     for pair in PAIRS:
         signal = get_signal(pair)
         if signal:
-            msg = f"""
-{signal['pair']}
-{signal['direction']}
-Expiry: {"5 Minutes" if TIMEFRAME == "5m" else "15 Minutes"}
-RSI: {signal['rsi']} | EMA: Crossed
-Confidence: 75%
-"""
+            msg = f"{signal['pair']}\n{signal['direction']}\nExpiry: {'5 Minutes' if TIMEFRAME == '5m' else '15 Minutes'}\nRSI: {signal['rsi']} | EMA: Crossed\nConfidence: 75%"
             for chat_id in app.chat_ids:
                 try:
                     await app.bot.send_message(chat_id=chat_id, text=msg)
-                except Exception as e:
-                    print(f"Send error: {e}")
+                except: pass
         await asyncio.sleep(1)
 
-# === SETUP ===
+# === THIS IS THE CORRECT WAY FOR PTB v21 ===
 async def post_init(app: Application):
     app.chat_ids = set()
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
     scheduler.add_job(scan_and_send, "interval", minutes=4, args=[app])
     scheduler.start()
-    print("Scheduler started")
 
-# === THIS IS THE FIX ===
-async def health(_):
-    return web.Response(text="Bot is running")
+    # Add health check route AFTER server starts
+    async def health_handler(request):
+        return app.web_app.Response(text="Bot is running", status=200)
 
-async def run_bot():
+    app.web_app.router.add_get("/", health_handler)
+    print("Health check route added")
+
+def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -149,16 +133,13 @@ async def run_bot():
     app.add_handler(CommandHandler("on", on))
     app.add_handler(CommandHandler("off", off))
 
-    # Create custom aiohttp app for health check
-    webapp = web.Application()
-    webapp.router.add_get("/", health)
-
-    # Attach PTB webhook to the same app
-    await app.bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
-    webapp.router.add_post(f"/{BOT_TOKEN}", app.webhook_handler())
-
-    return webapp
+    print(f"Starting webhook on port {PORT}")
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
+    )
 
 if __name__ == "__main__":
-    webapp = asyncio.run(run_bot())
-    web.run_app(webapp, host="0.0.0.0", port=PORT)
+    main()
