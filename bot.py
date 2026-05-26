@@ -27,10 +27,6 @@ SESSION_START = 8
 SESSION_END = 17
 TIMEZONE = pytz.timezone("Africa/Lagos")
 
-# === HEALTH CHECK ===
-async def health_check(request):
-    return web.Response(text="Bot is running", status=200)
-
 # === TRADING LOGIC ===
 def get_signal(pair):
     try:
@@ -43,7 +39,6 @@ def get_signal(pair):
         loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
         rs = gain / loss
         data['RSI'] = 100 - (100 / (1 + rs))
-
         data['EMA_FAST'] = data['Close'].ewm(span=EMA_FAST, adjust=False).mean()
         data['EMA_SLOW'] = data['Close'].ewm(span=EMA_SLOW, adjust=False).mean()
 
@@ -58,10 +53,8 @@ def get_signal(pair):
 
         if rsi < 30 and prev_ema_fast < prev_ema_slow and ema_fast > ema_slow:
             return {"pair": pair.replace("=X", ""), "direction": "CALL ✅", "rsi": round(rsi, 1)}
-
         if rsi > 70 and prev_ema_fast > prev_ema_slow and ema_fast < ema_slow:
             return {"pair": pair.replace("=X", ""), "direction": "PUT 🔻", "rsi": round(rsi, 1)}
-
         return None
     except Exception as e:
         print(f"Error scanning {pair}: {e}")
@@ -71,9 +64,8 @@ def check_session():
     now = datetime.now(TIMEZONE)
     return SESSION_START <= now.hour < SESSION_END
 
-# === TELEGRAM COMMANDS ===
+# === COMMANDS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.application.chat_ids.add(update.effective_chat.id)
     msg = f"""
 ⚡ PO BINARY BOT ⚡
 Scanning {len(PAIRS)} pairs
@@ -102,7 +94,6 @@ async def tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /tf M5 or /tf M15")
         return
-
     arg = context.args[0].upper()
     if arg == "M5":
         TIMEFRAME = "5m"
@@ -127,7 +118,6 @@ async def off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scan_and_send(app: Application):
     if not BOT_ACTIVE or not check_session():
         return
-
     for pair in PAIRS:
         signal = get_signal(pair)
         if signal:
@@ -145,7 +135,10 @@ Confidence: 75%
                     print(f"Send error: {e}")
         await asyncio.sleep(1)
 
-# === SETUP ===
+# === HEALTH CHECK + SETUP ===
+async def health_check(request):
+    return web.Response(text="Bot is running", status=200)
+
 async def post_init(app: Application):
     app.chat_ids = set()
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
@@ -153,20 +146,22 @@ async def post_init(app: Application):
     scheduler.start()
     print("Scheduler started")
 
+    # This is the correct way - inside post_init
+    app.web_app.router.add_get("/", health_check)
+
+async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.application.chat_ids.add(update.effective_chat.id)
+
 def main():
-    # Build aiohttp app FIRST
-    web_app = web.Application()
-    web_app.router.add_get("/", health_check)
+    # DO NOT add.web_app() here - that was the bug
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # Pass it to PTB
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).web_app(web_app).build()
-
-    # Add handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("tf", tf))
     app.add_handler(CommandHandler("on", on))
     app.add_handler(CommandHandler("off", off))
+    app.add_handler(CommandHandler("start", track_chats), group=1)
 
     print(f"Starting webhook on port {PORT}")
     app.run_webhook(
