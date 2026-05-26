@@ -14,10 +14,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 10000))
 
-# Trading config
-PAIRS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X",
-         "NZDUSD=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X", "AUDJPY=X", "EURCHF=X",
-         "GBPCHF=X", "CADJPY=X"]
+# Trading config - Reduced to 6 majors to avoid Yahoo rate limits
+PAIRS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X"]
 TIMEFRAME = "5m"
 RSI_PERIOD = 14
 EMA_FAST = 9
@@ -31,16 +29,14 @@ TIMEZONE = pytz.timezone("Africa/Lagos")
 application = Application.builder().token(BOT_TOKEN).build()
 application.chat_ids = set()
 
-# === TRADING LOGIC - FIXED FOR MULTIINDEX ===
+# === TRADING LOGIC - WITH RATE LIMIT PROTECTION ===
 def get_signal(pair):
     try:
-        # group_by='column' forces flat columns for forex
         data = yf.download(tickers=pair, period="2d", interval=TIMEFRAME, progress=False, group_by='column')
 
         if data.empty or len(data) < EMA_SLOW + 5:
             return None
 
-        # Flatten MultiIndex if yfinance still adds it
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.droplevel(1)
 
@@ -59,7 +55,6 @@ def get_signal(pair):
         last = data.iloc[-2]
         prev = data.iloc[-3]
 
-        #.item() safely extracts scalar from Series
         rsi = last['RSI'].item()
         ema_fast_last = last['EMA_FAST'].item()
         ema_slow_last = last['EMA_SLOW'].item()
@@ -69,11 +64,9 @@ def get_signal(pair):
         if pd.isna(rsi):
             return None
 
-        # CALL signal: RSI oversold + EMA cross up
         if rsi < 30 and ema_fast_prev < ema_slow_prev and ema_fast_last > ema_slow_last:
             return {"pair": pair.replace("=X", ""), "direction": "CALL ✅", "rsi": round(rsi, 1)}
 
-        # PUT signal: RSI overbought + EMA cross down
         if rsi > 70 and ema_fast_prev > ema_slow_prev and ema_fast_last < ema_slow_last:
             return {"pair": pair.replace("=X", ""), "direction": "PUT 🔻", "rsi": round(rsi, 1)}
         return None
@@ -119,22 +112,29 @@ async def off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     BOT_ACTIVE = False
     await update.message.reply_text("Bot deactivated ❌")
 
-# === AUTO SCANNER ===
+# === AUTO SCANNER - WITH RATE LIMIT PROTECTION ===
 async def scan_and_send():
     if not BOT_ACTIVE or not check_session():
         return
     print(f"Scanning {len(PAIRS)} pairs at {datetime.now(TIMEZONE).strftime('%H:%M:%S')}")
-    for pair in PAIRS:
-        signal = get_signal(pair)
-        if signal:
-            msg = f"{signal['pair']}\n{signal['direction']}\nExpiry: {'5 Minutes' if TIMEFRAME == '5m' else '15 Minutes'}\nRSI: {signal['rsi']} | EMA: Crossed\nConfidence: 75%"
-            for chat_id in application.chat_ids:
-                try:
-                    await application.bot.send_message(chat_id=chat_id, text=msg)
-                    print(f"Signal sent: {signal['pair']} {signal['direction']}")
-                except Exception as e:
-                    print(f"Failed to send to {chat_id}: {e}")
-        await asyncio.sleep(1)
+    for i, pair in enumerate(PAIRS):
+        try:
+            signal = get_signal(pair)
+            if signal:
+                msg = f"{signal['pair']}\n{signal['direction']}\nExpiry: {'5 Minutes' if TIMEFRAME == '5m' else '15 Minutes'}\nRSI: {signal['rsi']} | EMA: Crossed\nConfidence: 75%"
+                for chat_id in application.chat_ids:
+                    try:
+                        await application.bot.send_message(chat_id=chat_id, text=msg)
+                        print(f"Signal sent: {signal['pair']} {signal['direction']}")
+                    except Exception as e:
+                        print(f"Failed to send to {chat_id}: {e}")
+        except Exception as e:
+            print(f"Rate limit or error on {pair}: {e}")
+            await asyncio.sleep(5) # Extra wait if Yahoo blocks us
+
+        # CRITICAL: 2 second delay between pairs to avoid rate limit
+        if i < len(PAIRS) - 1:
+            await asyncio.sleep(2)
 
 # === WEB SERVER ===
 async def telegram_webhook(request):
@@ -157,9 +157,9 @@ async def setup():
     await application.start()
 
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-    scheduler.add_job(scan_and_send, "interval", minutes=4)
+    scheduler.add_job(scan_and_send, "interval", minutes=5) # Changed to 5 mins
     scheduler.start()
-    print("Bot started - Scheduler running every 4 mins")
+    print("Bot started - Scheduler running every 5 mins")
 
 def main():
     app = web.Application()
