@@ -11,21 +11,25 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === CONFIG ===
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL") # https://forex-bot-1-1df7.onrender.com
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 10000))
 
 # Trading config
 PAIRS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X",
          "NZDUSD=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X", "AUDJPY=X", "EURCHF=X",
          "GBPCHF=X", "CADJPY=X"]
-TIMEFRAME = "5m" # Use /tf M15 to change
+TIMEFRAME = "5m"
 RSI_PERIOD = 14
 EMA_FAST = 9
 EMA_SLOW = 21
 BOT_ACTIVE = True
-SESSION_START = 8 # 8 AM
-SESSION_END = 17 # 5 PM
-TIMEZONE = pytz.timezone("Africa/Lagos") # GMT+1
+SESSION_START = 8
+SESSION_END = 17
+TIMEZONE = pytz.timezone("Africa/Lagos")
+
+# === HEALTH CHECK ===
+async def health_check(request):
+    return web.Response(text="Bot is running", status=200)
 
 # === TRADING LOGIC ===
 def get_signal(pair):
@@ -34,18 +38,16 @@ def get_signal(pair):
         if len(data) < EMA_SLOW + 5:
             return None
 
-        # Calculate RSI
         delta = data['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
         rs = gain / loss
         data['RSI'] = 100 - (100 / (1 + rs))
 
-        # Calculate EMAs
         data['EMA_FAST'] = data['Close'].ewm(span=EMA_FAST, adjust=False).mean()
         data['EMA_SLOW'] = data['Close'].ewm(span=EMA_SLOW, adjust=False).mean()
 
-        last = data.iloc[-2] # Use closed candle
+        last = data.iloc[-2]
         prev = data.iloc[-3]
 
         rsi = last['RSI']
@@ -54,11 +56,9 @@ def get_signal(pair):
         prev_ema_fast = prev['EMA_FAST']
         prev_ema_slow = prev['EMA_SLOW']
 
-        # CALL signal: RSI < 30 + EMA cross up
         if rsi < 30 and prev_ema_fast < prev_ema_slow and ema_fast > ema_slow:
             return {"pair": pair.replace("=X", ""), "direction": "CALL ✅", "rsi": round(rsi, 1)}
 
-        # PUT signal: RSI > 70 + EMA cross down
         if rsi > 70 and prev_ema_fast > prev_ema_slow and ema_fast < ema_slow:
             return {"pair": pair.replace("=X", ""), "direction": "PUT 🔻", "rsi": round(rsi, 1)}
 
@@ -73,6 +73,7 @@ def check_session():
 
 # === TELEGRAM COMMANDS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.application.chat_ids.add(update.effective_chat.id)
     msg = f"""
 ⚡ PO BINARY BOT ⚡
 Scanning {len(PAIRS)} pairs
@@ -142,12 +143,9 @@ Confidence: 75%
                     await app.bot.send_message(chat_id=chat_id, text=msg)
                 except Exception as e:
                     print(f"Send error: {e}")
-        await asyncio.sleep(1) # Rate limit
+        await asyncio.sleep(1)
 
-# === HEALTH CHECK + SETUP ===
-async def health_check(request):
-    return web.Response(text="Bot is running", status=200)
-
+# === SETUP ===
 async def post_init(app: Application):
     app.chat_ids = set()
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
@@ -155,14 +153,13 @@ async def post_init(app: Application):
     scheduler.start()
     print("Scheduler started")
 
-    # Add health check route here - this is the correct spot
-    app.web_app.router.add_get("/", health_check)
-
-async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.application.chat_ids.add(update.effective_chat.id)
-
 def main():
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    # Build aiohttp app FIRST
+    web_app = web.Application()
+    web_app.router.add_get("/", health_check)
+
+    # Pass it to PTB
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).web_app(web_app).build()
 
     # Add handlers
     app.add_handler(CommandHandler("start", start))
@@ -170,12 +167,6 @@ def main():
     app.add_handler(CommandHandler("tf", tf))
     app.add_handler(CommandHandler("on", on))
     app.add_handler(CommandHandler("off", off))
-    app.add_handler(CommandHandler("help", start))
-    app.add_handler(CommandHandler("pairs", start))
-    app.add_handler(CommandHandler("session", start))
-
-    # Track all chats for broadcasting
-    app.add_handler(CommandHandler("start", track_chats), group=1)
 
     print(f"Starting webhook on port {PORT}")
     app.run_webhook(
