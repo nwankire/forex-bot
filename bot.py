@@ -16,7 +16,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 10000))
 
-# CUT TO 4 MAJORS ONLY - Yahoo is being strict
+# CUT TO 4 MAJORS - Yahoo is blocking Render IPs
 PAIRS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X"]
 TIMEFRAME = "5m"
 RSI_PERIOD = 14
@@ -35,11 +35,10 @@ session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Apple
 application = Application.builder().token(BOT_TOKEN).build()
 application.chat_ids = set()
 
-# === TRADING LOGIC - WITH RETRY + HEADERS ===
+# === TRADING LOGIC ===
 def get_signal(pair):
-    for attempt in range(2): # Try twice
+    for attempt in range(2):
         try:
-            # Use custom session to avoid Yahoo blocks
             data = yf.download(
                 tickers=pair,
                 period="2d",
@@ -47,7 +46,7 @@ def get_signal(pair):
                 progress=False,
                 group_by='column',
                 session=session,
-                threads=False # Disable threading to avoid issues
+                threads=False
             )
 
             if data.empty or len(data) < EMA_SLOW + 5:
@@ -90,7 +89,7 @@ def get_signal(pair):
         except Exception as e:
             print(f"Error scanning {pair} attempt {attempt+1}: {e}")
             if attempt == 0:
-                time.sleep(3) # Wait 3s before retry
+                time.sleep(3)
             else:
                 return None
     return None
@@ -129,10 +128,11 @@ async def on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot activated ✅")
 
 async def off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global BOT_ACTIVE = False
+    global BOT_ACTIVE
+    BOT_ACTIVE = False
     await update.message.reply_text("Bot deactivated ❌")
 
-# === AUTO SCANNER WITH 5S DELAY ===
+# === AUTO SCANNER ===
 async def scan_and_send():
     if not BOT_ACTIVE or not check_session():
         return
@@ -148,7 +148,6 @@ async def scan_and_send():
                 except Exception as e:
                     print(f"Failed to send to {chat_id}: {e}")
 
-        # 5 second delay between pairs - Yahoo is strict on Render
         if i < len(PAIRS) - 1:
             await asyncio.sleep(5)
 
