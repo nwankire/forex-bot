@@ -5,9 +5,10 @@ import pytz
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from aiohttp import web
 
 # ============ CONFIG ============
-BOT_TOKEN = os.environ.get('BOT_TOKEN') # Rename TOKEN to BOT_TOKEN in Render
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
 API_KEY = os.environ.get('API_KEY', 'demo')
 CHAT_ID = os.environ.get('CHAT_ID')
 
@@ -17,17 +18,21 @@ PAIRS = [
     "USD/CHF", "EUR/AUD", "GBP/AUD", "EUR/CAD"
 ]
 
-TIMEFRAME = "5min" # 1min, 5min, 15min
+TIMEFRAME = "5min"
 EXPIRY = "5 Minutes"
 SCAN_INTERVAL = 4
 BOT_ACTIVE = True
-TZ = pytz.timezone('Africa/Lagos') # GMT+1
+TZ = pytz.timezone('Africa/Lagos')
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# ============ HEALTH CHECK FOR UPTIMEROBOT ============
+async def health(request):
+    return web.Response(text="Bot is alive")
 
 # ============ TRADING LOGIC ============
 def get_data(pair, interval="5min"):
@@ -202,10 +207,6 @@ Scan interval: {SCAN_INTERVAL} mins
 Scanning {len(PAIRS)} pairs"""
     )
 
-# ============ HEALTH CHECK FOR UPTIMEROBOT ============
-async def health_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bot is alive", status=200)
-
 # ============ MAIN ============
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
@@ -217,10 +218,11 @@ def main():
     application.add_handler(CommandHandler("signal", signal_command))
     application.add_handler(CommandHandler("tf", tf_command))
 
-    # Health check route for UptimeRobot - GET /
-    application.add_handler(CommandHandler("health", health_check))
-
     application.job_queue.run_repeating(scan_and_send, interval=SCAN_INTERVAL*60, first=10)
+
+    # Add health check route for UptimeRobot
+    web_app = application.run_webhook.__self__.web_app
+    web_app.router.add_get("/", health)
 
     PORT = int(os.environ.get('PORT', 10000))
     WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL')
