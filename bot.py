@@ -31,16 +31,16 @@ TIMEZONE = pytz.timezone("Africa/Lagos")
 application = Application.builder().token(BOT_TOKEN).build()
 application.chat_ids = set()
 
-# === TRADING LOGIC - FINAL PANDAS FIX ===
+# === TRADING LOGIC - FIXED FOR MULTIINDEX ===
 def get_signal(pair):
     try:
-        # group_by='column' prevents MultiIndex columns from yfinance
+        # group_by='column' forces flat columns for forex
         data = yf.download(tickers=pair, period="2d", interval=TIMEFRAME, progress=False, group_by='column')
 
         if data.empty or len(data) < EMA_SLOW + 5:
             return None
 
-        # Flatten MultiIndex if it still exists
+        # Flatten MultiIndex if yfinance still adds it
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.droplevel(1)
 
@@ -59,14 +59,14 @@ def get_signal(pair):
         last = data.iloc[-2]
         prev = data.iloc[-3]
 
-        #.item() extracts scalar from 1-element Series safely
+        #.item() safely extracts scalar from Series
         rsi = last['RSI'].item()
         ema_fast_last = last['EMA_FAST'].item()
         ema_slow_last = last['EMA_SLOW'].item()
         ema_fast_prev = prev['EMA_FAST'].item()
         ema_slow_prev = prev['EMA_SLOW'].item()
 
-        if pd.isna(rsi) or pd.isna(ema_fast_last):
+        if pd.isna(rsi):
             return None
 
         # CALL signal: RSI oversold + EMA cross up
