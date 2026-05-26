@@ -8,14 +8,16 @@ from aiohttp import web
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import requests
+import time
 
 # === CONFIG ===
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 10000))
 
-# Trading config - 6 majors to avoid Yahoo rate limit
-PAIRS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X"]
+# CUT TO 4 MAJORS ONLY - Yahoo is being strict
+PAIRS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X"]
 TIMEFRAME = "5m"
 RSI_PERIOD = 14
 EMA_FAST = 9
@@ -25,54 +27,73 @@ SESSION_START = 8
 SESSION_END = 17
 TIMEZONE = pytz.timezone("Africa/Lagos")
 
+# === YFINANCE SESSION WITH HEADERS ===
+session = requests.Session()
+session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+
 # === GLOBAL APP ===
 application = Application.builder().token(BOT_TOKEN).build()
 application.chat_ids = set()
 
-# === TRADING LOGIC ===
+# === TRADING LOGIC - WITH RETRY + HEADERS ===
 def get_signal(pair):
-    try:
-        data = yf.download(tickers=pair, period="2d", interval=TIMEFRAME, progress=False, group_by='column')
+    for attempt in range(2): # Try twice
+        try:
+            # Use custom session to avoid Yahoo blocks
+            data = yf.download(
+                tickers=pair,
+                period="2d",
+                interval=TIMEFRAME,
+                progress=False,
+                group_by='column',
+                session=session,
+                threads=False # Disable threading to avoid issues
+            )
 
-        if data.empty or len(data) < EMA_SLOW + 5:
+            if data.empty or len(data) < EMA_SLOW + 5:
+                return None
+
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.droplevel(1)
+
+            delta = data['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
+            rs = gain / loss
+            data['RSI'] = 100 - (100 / (1 + rs))
+            data['EMA_FAST'] = data['Close'].ewm(span=EMA_FAST, adjust=False).mean()
+            data['EMA_SLOW'] = data['Close'].ewm(span=EMA_SLOW, adjust=False).mean()
+
+            data = data.dropna()
+            if len(data) < 3:
+                return None
+
+            last = data.iloc[-2]
+            prev = data.iloc[-3]
+
+            rsi = last['RSI'].item()
+            ema_fast_last = last['EMA_FAST'].item()
+            ema_slow_last = last['EMA_SLOW'].item()
+            ema_fast_prev = prev['EMA_FAST'].item()
+            ema_slow_prev = prev['EMA_SLOW'].item()
+
+            if pd.isna(rsi):
+                return None
+
+            if rsi < 30 and ema_fast_prev < ema_slow_prev and ema_fast_last > ema_slow_last:
+                return {"pair": pair.replace("=X", ""), "direction": "CALL ✅", "rsi": round(rsi, 1)}
+
+            if rsi > 70 and ema_fast_prev > ema_slow_prev and ema_fast_last < ema_slow_last:
+                return {"pair": pair.replace("=X", ""), "direction": "PUT 🔻", "rsi": round(rsi, 1)}
             return None
 
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.droplevel(1)
-
-        delta = data['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
-        rs = gain / loss
-        data['RSI'] = 100 - (100 / (1 + rs))
-        data['EMA_FAST'] = data['Close'].ewm(span=EMA_FAST, adjust=False).mean()
-        data['EMA_SLOW'] = data['Close'].ewm(span=EMA_SLOW, adjust=False).mean()
-
-        data = data.dropna()
-        if len(data) < 3:
-            return None
-
-        last = data.iloc[-2]
-        prev = data.iloc[-3]
-
-        rsi = last['RSI'].item()
-        ema_fast_last = last['EMA_FAST'].item()
-        ema_slow_last = last['EMA_SLOW'].item()
-        ema_fast_prev = prev['EMA_FAST'].item()
-        ema_slow_prev = prev['EMA_SLOW'].item()
-
-        if pd.isna(rsi):
-            return None
-
-        if rsi < 30 and ema_fast_prev < ema_slow_prev and ema_fast_last > ema_slow_last:
-            return {"pair": pair.replace("=X", ""), "direction": "CALL ✅", "rsi": round(rsi, 1)}
-
-        if rsi > 70 and ema_fast_prev > ema_slow_prev and ema_fast_last < ema_slow_last:
-            return {"pair": pair.replace("=X", ""), "direction": "PUT 🔻", "rsi": round(rsi, 1)}
-        return None
-    except Exception as e:
-        print(f"Error scanning {pair}: {e}")
-        return None
+        except Exception as e:
+            print(f"Error scanning {pair} attempt {attempt+1}: {e}")
+            if attempt == 0:
+                time.sleep(3) # Wait 3s before retry
+            else:
+                return None
+    return None
 
 def check_session():
     now = datetime.now(TIMEZONE)
@@ -108,32 +129,28 @@ async def on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot activated ✅")
 
 async def off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global BOT_ACTIVE
-    BOT_ACTIVE = False
+    global BOT_ACTIVE = False
     await update.message.reply_text("Bot deactivated ❌")
 
-# === AUTO SCANNER WITH RATE LIMIT PROTECTION ===
+# === AUTO SCANNER WITH 5S DELAY ===
 async def scan_and_send():
     if not BOT_ACTIVE or not check_session():
         return
     print(f"Scanning {len(PAIRS)} pairs at {datetime.now(TIMEZONE).strftime('%H:%M:%S')}")
     for i, pair in enumerate(PAIRS):
-        try:
-            signal = get_signal(pair)
-            if signal:
-                msg = f"{signal['pair']}\n{signal['direction']}\nExpiry: {'5 Minutes' if TIMEFRAME == '5m' else '15 Minutes'}\nRSI: {signal['rsi']} | EMA: Crossed\nConfidence: 75%"
-                for chat_id in application.chat_ids:
-                    try:
-                        await application.bot.send_message(chat_id=chat_id, text=msg)
-                        print(f"Signal sent: {signal['pair']} {signal['direction']}")
-                    except Exception as e:
-                        print(f"Failed to send to {chat_id}: {e}")
-        except Exception as e:
-            print(f"Rate limit or error on {pair}: {e}")
-            await asyncio.sleep(5)
+        signal = get_signal(pair)
+        if signal:
+            msg = f"{signal['pair']}\n{signal['direction']}\nExpiry: {'5 Minutes' if TIMEFRAME == '5m' else '15 Minutes'}\nRSI: {signal['rsi']} | EMA: Crossed\nConfidence: 75%"
+            for chat_id in application.chat_ids:
+                try:
+                    await application.bot.send_message(chat_id=chat_id, text=msg)
+                    print(f"Signal sent: {signal['pair']} {signal['direction']}")
+                except Exception as e:
+                    print(f"Failed to send to {chat_id}: {e}")
 
+        # 5 second delay between pairs - Yahoo is strict on Render
         if i < len(PAIRS) - 1:
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
 
 # === WEB SERVER ===
 async def telegram_webhook(request):
