@@ -14,7 +14,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 10000))
 
-# Trading config - CUT TO 6 MAJORS TO AVOID RATE LIMIT
+# Trading config - 6 majors to avoid Yahoo rate limit
 PAIRS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X"]
 TIMEFRAME = "5m"
 RSI_PERIOD = 14
@@ -64,11 +64,9 @@ def get_signal(pair):
         if pd.isna(rsi):
             return None
 
-        # CALL signal: RSI oversold + EMA cross up
         if rsi < 30 and ema_fast_prev < ema_slow_prev and ema_fast_last > ema_slow_last:
             return {"pair": pair.replace("=X", ""), "direction": "CALL ✅", "rsi": round(rsi, 1)}
 
-        # PUT signal: RSI overbought + EMA cross down
         if rsi > 70 and ema_fast_prev > ema_slow_prev and ema_fast_last < ema_slow_last:
             return {"pair": pair.replace("=X", ""), "direction": "PUT 🔻", "rsi": round(rsi, 1)}
         return None
@@ -132,9 +130,8 @@ async def scan_and_send():
                         print(f"Failed to send to {chat_id}: {e}")
         except Exception as e:
             print(f"Rate limit or error on {pair}: {e}")
-            await asyncio.sleep(5) # Chill 5s if Yahoo blocks us
+            await asyncio.sleep(5)
 
-        # 2 second delay between pairs to avoid rate limit
         if i < len(PAIRS) - 1:
             await asyncio.sleep(2)
 
@@ -159,7 +156,7 @@ async def setup():
     await application.start()
 
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-    scheduler.add_job(scan_and_send, "interval", minutes=5) # Changed to 5 mins
+    scheduler.add_job(scan_and_send, "interval", minutes=5)
     scheduler.start()
     print("Bot started - Scheduler running every 5 mins")
 
