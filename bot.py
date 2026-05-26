@@ -27,9 +27,9 @@ SESSION_START = 8
 SESSION_END = 17
 TIMEZONE = pytz.timezone("Africa/Lagos")
 
-# === HEALTH CHECK ROUTE ===
-async def health(request):
-    return web.Response(text="Bot is running", status=200)
+# === GLOBAL APP ===
+application = Application.builder().token(BOT_TOKEN).build()
+application.chat_ids = set()
 
 # === TRADING LOGIC ===
 def get_signal(pair):
@@ -62,7 +62,7 @@ def check_session():
 
 # === COMMANDS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.application.chat_ids.add(update.effective_chat.id)
+    application.chat_ids.add(update.effective_chat.id)
     msg = f"⚡ PO BINARY BOT ⚡\nScanning {len(PAIRS)} pairs\nStrategy: RSI{RSI_PERIOD} + EMA{EMA_FAST}/{EMA_SLOW}\nTF: {TIMEFRAME.upper()}\nSession: {SESSION_START}am-{SESSION_END}pm GMT+1\nStatus: {'ON' if BOT_ACTIVE else 'OFF'}"
     await update.message.reply_text(msg)
 
@@ -95,47 +95,52 @@ async def off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot deactivated ❌")
 
 # === AUTO SCANNER ===
-async def scan_and_send(app: Application):
+async def scan_and_send():
     if not BOT_ACTIVE or not check_session():
         return
     for pair in PAIRS:
         signal = get_signal(pair)
         if signal:
             msg = f"{signal['pair']}\n{signal['direction']}\nExpiry: {'5 Minutes' if TIMEFRAME == '5m' else '15 Minutes'}\nRSI: {signal['rsi']} | EMA: Crossed\nConfidence: 75%"
-            for chat_id in app.chat_ids:
+            for chat_id in application.chat_ids:
                 try:
-                    await app.bot.send_message(chat_id=chat_id, text=msg)
+                    await application.bot.send_message(chat_id=chat_id, text=msg)
                 except: pass
         await asyncio.sleep(1)
 
-async def post_init(app: Application):
-    app.chat_ids = set()
+# === WEB SERVER ===
+async def telegram_webhook(request):
+    update = Update.de_json(await request.json(), application.bot)
+    await application.process_update(update)
+    return web.Response()
+
+async def health_check(request):
+    return web.Response(text="Bot is running", status=200)
+
+async def setup():
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("tf", tf))
+    application.add_handler(CommandHandler("on", on))
+    application.add_handler(CommandHandler("off", off))
+
+    await application.initialize()
+    await application.bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
+    await application.start()
+
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
-    scheduler.add_job(scan_and_send, "interval", minutes=4, args=[app])
+    scheduler.add_job(scan_and_send, "interval", minutes=4)
     scheduler.start()
-    print("Scheduler started")
+    print("Bot started")
 
 def main():
-    # 1. Create web app FIRST
-    webapp = web.Application()
-    webapp.router.add_get("/", health) # Health check for UptimeRobot
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    app.router.add_post(f"/{BOT_TOKEN}", telegram_webhook)
+    app.on_startup.append(lambda _: setup())
 
-    # 2. Pass it to PTB builder - THIS LINE IS THE FIX
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).web_app(webapp).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("tf", tf))
-    app.add_handler(CommandHandler("on", on))
-    app.add_handler(CommandHandler("off", off))
-
-    print(f"Starting webhook on port {PORT}")
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=BOT_TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
-    )
+    print(f"Starting server on port {PORT}")
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     main()
