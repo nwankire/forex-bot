@@ -27,10 +27,6 @@ SESSION_START = 8 # 8 AM
 SESSION_END = 17 # 5 PM
 TIMEZONE = pytz.timezone("Africa/Lagos") # GMT+1
 
-# === HEALTH CHECK FOR UPTIMEROBOT ===
-async def health_check(request):
-    return web.Response(text="Bot is running", status=200)
-
 # === TRADING LOGIC ===
 def get_signal(pair):
     try:
@@ -148,13 +144,19 @@ Confidence: 75%
                     print(f"Send error: {e}")
         await asyncio.sleep(1) # Rate limit
 
-# === MAIN ===
+# === HEALTH CHECK + SETUP ===
+async def health_check(request):
+    return web.Response(text="Bot is running", status=200)
+
 async def post_init(app: Application):
     app.chat_ids = set()
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
     scheduler.add_job(scan_and_send, "interval", minutes=4, args=[app])
     scheduler.start()
     print("Scheduler started")
+
+    # Add health check route here - this is the correct spot
+    app.web_app.router.add_get("/", health_check)
 
 async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.application.chat_ids.add(update.effective_chat.id)
@@ -174,9 +176,6 @@ def main():
 
     # Track all chats for broadcasting
     app.add_handler(CommandHandler("start", track_chats), group=1)
-
-    # Health check for UptimeRobot
-    app.web_app.router.add_get("/", health_check)
 
     print(f"Starting webhook on port {PORT}")
     app.run_webhook(
