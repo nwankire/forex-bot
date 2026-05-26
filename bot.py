@@ -31,7 +31,7 @@ TIMEZONE = pytz.timezone("Africa/Lagos")
 application = Application.builder().token(BOT_TOKEN).build()
 application.chat_ids = set()
 
-# === TRADING LOGIC - FIXED ===
+# === TRADING LOGIC - FIXED PANDAS ERROR ===
 def get_signal(pair):
     try:
         data = yf.download(tickers=pair, period="2d", interval=TIMEFRAME, progress=False)
@@ -49,15 +49,18 @@ def get_signal(pair):
         last = data.iloc[-2]
         prev = data.iloc[-3]
 
-        # FIX: Force to float to avoid "ambiguous Series" error
+        # FIX: Convert to float to avoid "Series is ambiguous" error
         rsi = float(last['RSI'])
         ema_fast_last = float(last['EMA_FAST'])
         ema_slow_last = float(last['EMA_SLOW'])
         ema_fast_prev = float(prev['EMA_FAST'])
         ema_slow_prev = float(prev['EMA_SLOW'])
 
+        # CALL signal: RSI oversold + EMA cross up
         if rsi < 30 and ema_fast_prev < ema_slow_prev and ema_fast_last > ema_slow_last:
             return {"pair": pair.replace("=X", ""), "direction": "CALL ✅", "rsi": round(rsi, 1)}
+
+        # PUT signal: RSI overbought + EMA cross down
         if rsi > 70 and ema_fast_prev > ema_slow_prev and ema_fast_last < ema_slow_last:
             return {"pair": pair.replace("=X", ""), "direction": "PUT 🔻", "rsi": round(rsi, 1)}
         return None
@@ -107,6 +110,7 @@ async def off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scan_and_send():
     if not BOT_ACTIVE or not check_session():
         return
+    print(f"Scanning {len(PAIRS)} pairs at {datetime.now(TIMEZONE).strftime('%H:%M:%S')}")
     for pair in PAIRS:
         signal = get_signal(pair)
         if signal:
@@ -114,7 +118,9 @@ async def scan_and_send():
             for chat_id in application.chat_ids:
                 try:
                     await application.bot.send_message(chat_id=chat_id, text=msg)
-                except: pass
+                    print(f"Signal sent: {signal['pair']} {signal['direction']}")
+                except Exception as e:
+                    print(f"Failed to send to {chat_id}: {e}")
         await asyncio.sleep(1)
 
 # === WEB SERVER ===
@@ -140,7 +146,7 @@ async def setup():
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
     scheduler.add_job(scan_and_send, "interval", minutes=4)
     scheduler.start()
-    print("Bot started - scheduler running")
+    print("Bot started - Scheduler running every 4 mins")
 
 def main():
     app = web.Application()
