@@ -5,7 +5,6 @@ import pytz
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from aiohttp import web
 
 # ============ CONFIG ============
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -30,15 +29,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============ HEALTH CHECK FOR UPTIMEROBOT ============
-async def health(request):
-    return web.Response(text="Bot is alive")
-
 # ============ TRADING LOGIC ============
 def get_data(pair, interval="5min"):
     try:
         symbol = pair.replace("/", "")
-        url = f"https://api.twelvedata.com/time_series"
+        url = "https://api.twelvedata.com/time_series"
         params = {
             "symbol": symbol,
             "interval": interval,
@@ -219,10 +214,6 @@ def main():
     application.add_handler(CommandHandler("tf", tf_command))
 
     application.job_queue.run_repeating(scan_and_send, interval=SCAN_INTERVAL*60, first=10)
-
-    # Add health check route for UptimeRobot
-    web_app = application.run_webhook.__self__.web_app
-    web_app.router.add_get("/", health)
 
     PORT = int(os.environ.get('PORT', 10000))
     WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL')
