@@ -1,228 +1,188 @@
 import os
-import logging
-import requests
-import pytz
+import asyncio
+import pandas as pd
+import yfinance as yf
 from datetime import datetime
+import pytz
+from aiohttp import web
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ============ CONFIG ============
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-API_KEY = os.environ.get('API_KEY', 'demo')
-CHAT_ID = os.environ.get('CHAT_ID')
+# === CONFIG ===
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL") # https://forex-bot-1-1df7.onrender.com
+PORT = int(os.environ.get("PORT", 10000))
 
-PAIRS = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD",
-    "EUR/GBP", "EUR/JPY", "GBP/JPY", "AUD/JPY", "NZD/USD",
-    "USD/CHF", "EUR/AUD", "GBP/AUD", "EUR/CAD"
-]
-
-TIMEFRAME = "5min"
-EXPIRY = "5 Minutes"
-SCAN_INTERVAL = 4
+# Trading config
+PAIRS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X",
+         "NZDUSD=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X", "AUDJPY=X", "EURCHF=X",
+         "GBPCHF=X", "CADJPY=X"]
+TIMEFRAME = "5m" # Use /tf M15 to change
+RSI_PERIOD = 14
+EMA_FAST = 9
+EMA_SLOW = 21
 BOT_ACTIVE = True
-TZ = pytz.timezone('Africa/Lagos')
+SESSION_START = 8 # 8 AM
+SESSION_END = 17 # 5 PM
+TIMEZONE = pytz.timezone("Africa/Lagos") # GMT+1
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# === HEALTH CHECK FOR UPTIMEROBOT ===
+async def health_check(request):
+    return web.Response(text="Bot is running", status=200)
 
-# ============ TRADING LOGIC ============
-def get_data(pair, interval="5min"):
+# === TRADING LOGIC ===
+def get_signal(pair):
     try:
-        symbol = pair.replace("/", "")
-        url = "https://api.twelvedata.com/time_series"
-        params = {
-            "symbol": symbol,
-            "interval": interval,
-            "outputsize": 30,
-            "apikey": API_KEY
-        }
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-        if "values" not in data:
-            logger.error(f"No data for {pair}: {data}")
+        data = yf.download(tickers=pair, period="2d", interval=TIMEFRAME, progress=False)
+        if len(data) < EMA_SLOW + 5:
             return None
-        closes = [float(x["close"]) for x in data["values"][::-1]]
-        return {"close": closes}
+
+        # Calculate RSI
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=RSI_PERIOD).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=RSI_PERIOD).mean()
+        rs = gain / loss
+        data['RSI'] = 100 - (100 / (1 + rs))
+
+        # Calculate EMAs
+        data['EMA_FAST'] = data['Close'].ewm(span=EMA_FAST, adjust=False).mean()
+        data['EMA_SLOW'] = data['Close'].ewm(span=EMA_SLOW, adjust=False).mean()
+
+        last = data.iloc[-2] # Use closed candle
+        prev = data.iloc[-3]
+
+        rsi = last['RSI']
+        ema_fast = last['EMA_FAST']
+        ema_slow = last['EMA_SLOW']
+        prev_ema_fast = prev['EMA_FAST']
+        prev_ema_slow = prev['EMA_SLOW']
+
+        # CALL signal: RSI < 30 + EMA cross up
+        if rsi < 30 and prev_ema_fast < prev_ema_slow and ema_fast > ema_slow:
+            return {"pair": pair.replace("=X", ""), "direction": "CALL ✅", "rsi": round(rsi, 1)}
+
+        # PUT signal: RSI > 70 + EMA cross down
+        if rsi > 70 and prev_ema_fast > prev_ema_slow and ema_fast < ema_slow:
+            return {"pair": pair.replace("=X", ""), "direction": "PUT 🔻", "rsi": round(rsi, 1)}
+
+        return None
     except Exception as e:
-        logger.error(f"Error fetching {pair}: {e}")
+        print(f"Error scanning {pair}: {e}")
         return None
 
-def ema(values, period):
-    if len(values) < period:
-        return None
-    k = 2 / (period + 1)
-    ema_val = sum(values[:period]) / period
-    for price in values[period:]:
-        ema_val = price * k + ema_val * (1 - k)
-    return ema_val
+def check_session():
+    now = datetime.now(TIMEZONE)
+    return SESSION_START <= now.hour < SESSION_END
 
-def rsi(values, period=14):
-    if len(values) < period + 1:
-        return None
-    gains = []
-    losses = []
-    for i in range(1, period + 1):
-        change = values[i] - values[i-1]
-        if change > 0:
-            gains.append(change)
-            losses.append(0)
-        else:
-            losses.append(abs(change))
-            gains.append(0)
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    if avg_loss == 0:
-        return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def check_signal(pair):
-    data = get_data(pair, TIMEFRAME)
-    if not data or len(data["close"]) < 21:
-        return None
-    closes = data["close"]
-    ema9 = ema(closes, 9)
-    ema21 = ema(closes, 21)
-    rsi14 = rsi(closes, 14)
-    if not ema9 or not ema21 or not rsi14:
-        return None
-    prev_ema9 = ema(closes[:-1], 9)
-    prev_ema21 = ema(closes[:-1], 21)
-    signal = None
-    entry = closes[-1]
-    if prev_ema9 <= prev_ema21 and ema9 > ema21 and 40 < rsi14 < 60 and closes[-1] > closes[-2]:
-        signal = "CALL"
-    elif prev_ema9 >= prev_ema21 and ema9 < ema21 and 40 < rsi14 < 60 and closes[-1] < closes[-2]:
-        signal = "PUT"
-    if signal:
-        return {
-            "pair": pair,
-            "signal": signal,
-            "entry": entry,
-            "rsi": round(rsi14, 1)
-        }
-    return None
-
-def is_session_active():
-    now = datetime.now(TZ)
-    hour = now.hour
-    return 8 <= hour < 17
-
-async def scan_and_send(context: ContextTypes.DEFAULT_TYPE):
-    if not BOT_ACTIVE or not is_session_active():
-        return
-    for pair in PAIRS:
-        result = check_signal(pair)
-        if result:
-            emoji = "🟢" if result["signal"] == "CALL" else "🔴"
-            msg = f"""⚡ {result["signal"]} ⚡
-
-PAIR: {result["pair"]} {emoji}
-TIMEFRAME: {TIMEFRAME.replace('min','M')} | EXPIRY: {EXPIRY}
-ENTRY: {result["entry"]}
-RSI: {result["rsi"]} | EMA9/21 Cross
-
-_Pick your setup. 1% risk max._"""
-            await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
-            logger.info(f"Signal sent: {result['pair']} {result['signal']}")
-
-# ============ TELEGRAM COMMANDS ============
+# === TELEGRAM COMMANDS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CHAT_ID
-    CHAT_ID = update.effective_chat.id
-    await update.message.reply_text(
-        f"""⚡ PO BINARY BOT ⚡
-
+    msg = f"""
+⚡ PO BINARY BOT ⚡
 Scanning {len(PAIRS)} pairs
-Strategy: RSI14 + EMA9/21
-Current TF: {TIMEFRAME.replace('min','M')} | {EXPIRY}
-Session: 8am-5pm GMT+1
+Strategy: RSI{RSI_PERIOD} + EMA{EMA_FAST}/{EMA_SLOW}
+Current TF: {TIMEFRAME.upper()} | {"5 Minutes" if TIMEFRAME == "5m" else "15 Minutes"}
+Session: {SESSION_START}am-{SESSION_END}pm GMT+1
 Status: {"ON" if BOT_ACTIVE else "OFF"}
+"""
+    await update.message.reply_text(msg)
 
-Commands:
-/on - Start auto signals
-/off - Stop auto signals
-/status - Check bot status
-/signal - Force scan now
-/tf M1|M5|M15 - Change timeframe"""
-    )
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(TIMEZONE).strftime("%H:%M")
+    session_status = "OPEN 🟢" if check_session() else "CLOSED ❌"
+    msg = f"""
+Status
+Time: {now} GMT+1
+Session: {session_status}
+TF: {TIMEFRAME.upper()} | {"5 Minutes" if TIMEFRAME == "5m" else "15 Minutes"}
+Bot: {"ON" if BOT_ACTIVE else "OFF"}
+Pairs: {len(PAIRS)}
+"""
+    await update.message.reply_text(msg)
 
-async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global TIMEFRAME
+    if not context.args:
+        await update.message.reply_text("Usage: /tf M5 or /tf M15")
+        return
+
+    arg = context.args[0].upper()
+    if arg == "M5":
+        TIMEFRAME = "5m"
+        await update.message.reply_text("Timeframe changed to M5 | 5 Minutes")
+    elif arg == "M15":
+        TIMEFRAME = "15m"
+        await update.message.reply_text("Timeframe changed to M15 | 15 Minutes")
+    else:
+        await update.message.reply_text("Invalid. Use /tf M5 or /tf M15")
+
+async def on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_ACTIVE
     BOT_ACTIVE = True
-    await update.message.reply_text("✅ Auto signals ON")
+    await update.message.reply_text("Bot activated ✅")
 
-async def off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_ACTIVE
     BOT_ACTIVE = False
-    await update.message.reply_text("❌ Auto signals OFF")
+    await update.message.reply_text("Bot deactivated ❌")
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now(TZ)
-    session = "ACTIVE ✅" if is_session_active() else "CLOSED ❌"
-    await update.message.reply_text(
-        f"""Status
-Time: {now.strftime('%H:%M')} GMT+1
-Session: {session}
-TF: {TIMEFRAME.replace('min','M')} | {EXPIRY}
-Bot: {"ON" if BOT_ACTIVE else "OFF"}
-Pairs: {len(PAIRS)}"""
-    )
-
-async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Scanning {len(PAIRS)} pairs on {TIMEFRAME.replace('min','M')}...")
-    await scan_and_send(context)
-
-async def tf_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global TIMEFRAME, EXPIRY, SCAN_INTERVAL
-    if not context.args:
-        await update.message.reply_text("Usage: /tf M1|M5|M15")
+# === AUTO SCANNER ===
+async def scan_and_send(app: Application):
+    if not BOT_ACTIVE or not check_session():
         return
-    tf = context.args[0].upper()
-    if tf == "M1":
-        TIMEFRAME, EXPIRY, SCAN_INTERVAL = "1min", "1 Minute", 1
-    elif tf == "M5":
-        TIMEFRAME, EXPIRY, SCAN_INTERVAL = "5min", "5 Minutes", 4
-    elif tf == "M15":
-        TIMEFRAME, EXPIRY, SCAN_INTERVAL = "15min", "15 Minutes", 15
-    else:
-        await update.message.reply_text("Invalid. Use: M1, M5, or M15")
-        return
-    for job in context.job_queue.jobs():
-        job.schedule_removal()
-    context.job_queue.run_repeating(scan_and_send, interval=SCAN_INTERVAL*60, first=10)
-    await update.message.reply_text(
-        f"""✅ Timeframe: {tf}
-Expiry: {EXPIRY}
-Scan interval: {SCAN_INTERVAL} mins
-Scanning {len(PAIRS)} pairs"""
-    )
 
-# ============ MAIN ============
+    for pair in PAIRS:
+        signal = get_signal(pair)
+        if signal:
+            msg = f"""
+{signal['pair']}
+{signal['direction']}
+Expiry: {"5 Minutes" if TIMEFRAME == "5m" else "15 Minutes"}
+RSI: {signal['rsi']} | EMA: Crossed
+Confidence: 75%
+"""
+            for chat_id in app.chat_ids:
+                try:
+                    await app.bot.send_message(chat_id=chat_id, text=msg)
+                except Exception as e:
+                    print(f"Send error: {e}")
+        await asyncio.sleep(1) # Rate limit
+
+# === MAIN ===
+async def post_init(app: Application):
+    app.chat_ids = set()
+    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+    scheduler.add_job(scan_and_send, "interval", minutes=4, args=[app])
+    scheduler.start()
+    print("Scheduler started")
+
+async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.application.chat_ids.add(update.effective_chat.id)
+
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("on", on_command))
-    application.add_handler(CommandHandler("off", off_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("signal", signal_command))
-    application.add_handler(CommandHandler("tf", tf_command))
+    # Add handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("tf", tf))
+    app.add_handler(CommandHandler("on", on))
+    app.add_handler(CommandHandler("off", off))
+    app.add_handler(CommandHandler("help", start))
+    app.add_handler(CommandHandler("pairs", start))
+    app.add_handler(CommandHandler("session", start))
 
-    application.job_queue.run_repeating(scan_and_send, interval=SCAN_INTERVAL*60, first=10)
+    # Track all chats for broadcasting
+    app.add_handler(CommandHandler("start", track_chats), group=1)
 
-    PORT = int(os.environ.get('PORT', 10000))
-    WEBHOOK_URL = os.environ.get('RENDER_EXTERNAL_URL')
+    # Health check for UptimeRobot
+    app.web_app.router.add_get("/", health_check)
 
-    logger.info(f"Starting webhook on port {PORT}")
-    application.run_webhook(
+    print(f"Starting webhook on port {PORT}")
+    app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
-        url_path=BOT_TOKEN, # Use token as path
+        url_path=BOT_TOKEN,
         webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
     )
 
