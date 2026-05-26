@@ -1,4 +1,6 @@
-python-telegram-bot[job-queue,webhooks]==21.6
-requests==2.31.0
-pytz==2024.1
+python-telegram-bot==21.3
 aiohttp==3.9.5
+pandas
+yfinance
+pytz
+apscheduler
