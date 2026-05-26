@@ -14,7 +14,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", 10000))
 
-# Trading config - Reduced to 6 majors to avoid Yahoo rate limits
+# Trading config - CUT TO 6 MAJORS TO AVOID RATE LIMIT
 PAIRS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X"]
 TIMEFRAME = "5m"
 RSI_PERIOD = 14
@@ -29,7 +29,7 @@ TIMEZONE = pytz.timezone("Africa/Lagos")
 application = Application.builder().token(BOT_TOKEN).build()
 application.chat_ids = set()
 
-# === TRADING LOGIC - WITH RATE LIMIT PROTECTION ===
+# === TRADING LOGIC ===
 def get_signal(pair):
     try:
         data = yf.download(tickers=pair, period="2d", interval=TIMEFRAME, progress=False, group_by='column')
@@ -64,9 +64,11 @@ def get_signal(pair):
         if pd.isna(rsi):
             return None
 
+        # CALL signal: RSI oversold + EMA cross up
         if rsi < 30 and ema_fast_prev < ema_slow_prev and ema_fast_last > ema_slow_last:
             return {"pair": pair.replace("=X", ""), "direction": "CALL ✅", "rsi": round(rsi, 1)}
 
+        # PUT signal: RSI overbought + EMA cross down
         if rsi > 70 and ema_fast_prev > ema_slow_prev and ema_fast_last < ema_slow_last:
             return {"pair": pair.replace("=X", ""), "direction": "PUT 🔻", "rsi": round(rsi, 1)}
         return None
@@ -112,7 +114,7 @@ async def off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     BOT_ACTIVE = False
     await update.message.reply_text("Bot deactivated ❌")
 
-# === AUTO SCANNER - WITH RATE LIMIT PROTECTION ===
+# === AUTO SCANNER WITH RATE LIMIT PROTECTION ===
 async def scan_and_send():
     if not BOT_ACTIVE or not check_session():
         return
@@ -130,9 +132,9 @@ async def scan_and_send():
                         print(f"Failed to send to {chat_id}: {e}")
         except Exception as e:
             print(f"Rate limit or error on {pair}: {e}")
-            await asyncio.sleep(5) # Extra wait if Yahoo blocks us
+            await asyncio.sleep(5) # Chill 5s if Yahoo blocks us
 
-        # CRITICAL: 2 second delay between pairs to avoid rate limit
+        # 2 second delay between pairs to avoid rate limit
         if i < len(PAIRS) - 1:
             await asyncio.sleep(2)
 
