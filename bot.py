@@ -5,7 +5,6 @@ import pytz
 from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from aiohttp import web
 
 # ============ CONFIG ============
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -29,10 +28,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# ============ HEALTH CHECK FOR UPTIMEROBOT ============
-async def health(request):
-    return web.Response(text="OK")
 
 # ============ TRADING LOGIC ============
 def get_data(pair, interval="5min"):
@@ -209,10 +204,6 @@ Scanning {len(PAIRS)} pairs"""
 
 # ============ MAIN ============
 def main():
-    # Create custom web app with health route
-    web_app = web.Application()
-    web_app.router.add_get("/", health)
-
     application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -232,8 +223,7 @@ def main():
         listen="0.0.0.0",
         port=PORT,
         webhook_url=f"{WEBHOOK_URL}/",
-        url_path="",
-        web_app=web_app # This makes GET / return "OK"
+        url_path=""
     )
 
 if __name__ == "__main__":
