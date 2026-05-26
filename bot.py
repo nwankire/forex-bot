@@ -4,6 +4,7 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime
 import pytz
+from aiohttp import web
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -25,6 +26,10 @@ BOT_ACTIVE = True
 SESSION_START = 8
 SESSION_END = 17
 TIMEZONE = pytz.timezone("Africa/Lagos")
+
+# === HEALTH CHECK ROUTE ===
+async def health(request):
+    return web.Response(text="Bot is running", status=200)
 
 # === TRADING LOGIC ===
 def get_signal(pair):
@@ -58,14 +63,7 @@ def check_session():
 # === COMMANDS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.application.chat_ids.add(update.effective_chat.id)
-    msg = f"""
-⚡ PO BINARY BOT ⚡
-Scanning {len(PAIRS)} pairs
-Strategy: RSI{RSI_PERIOD} + EMA{EMA_FAST}/{EMA_SLOW}
-Current TF: {TIMEFRAME.upper()}
-Session: {SESSION_START}am-{SESSION_END}pm GMT+1
-Status: {"ON" if BOT_ACTIVE else "OFF"}
-"""
+    msg = f"⚡ PO BINARY BOT ⚡\nScanning {len(PAIRS)} pairs\nStrategy: RSI{RSI_PERIOD} + EMA{EMA_FAST}/{EMA_SLOW}\nTF: {TIMEFRAME.upper()}\nSession: {SESSION_START}am-{SESSION_END}pm GMT+1\nStatus: {'ON' if BOT_ACTIVE else 'OFF'}"
     await update.message.reply_text(msg)
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,22 +108,20 @@ async def scan_and_send(app: Application):
                 except: pass
         await asyncio.sleep(1)
 
-# === THIS IS THE CORRECT WAY FOR PTB v21 ===
 async def post_init(app: Application):
     app.chat_ids = set()
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
     scheduler.add_job(scan_and_send, "interval", minutes=4, args=[app])
     scheduler.start()
-
-    # Add health check route AFTER server starts
-    async def health_handler(request):
-        return app.web_app.Response(text="Bot is running", status=200)
-
-    app.web_app.router.add_get("/", health_handler)
-    print("Health check route added")
+    print("Scheduler started")
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    # 1. Create web app FIRST
+    webapp = web.Application()
+    webapp.router.add_get("/", health) # Health check for UptimeRobot
+
+    # 2. Pass it to PTB builder - THIS LINE IS THE FIX
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).web_app(webapp).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
